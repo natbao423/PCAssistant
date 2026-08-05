@@ -1,0 +1,26 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Generated vector store (rebuilt automatically from the CSVs)
+chroma_db/
+
+# Runtime state — personal, not part of the project
+chat_history.json
+session_context.json
+
+# Model weights — far too large for git (GGUF files are 20+ GB)
+models/
+*.gguf
+
+# Editor / OS cruft
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
