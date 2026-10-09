@@ -36,29 +36,46 @@ BOTTLENECK_TIERS: list[tuple[float, float, str]] = [
 ]
 
 # Which backend serves the chat model.
+#   "llama_server"— llama.cpp llama-server running Qwen3.8-27B across both
+#                   GPUs. See SETUP_NOTES.md for the startup command.
 #   "ollama"      — simple, uses a model you `ollama pull`. Good for a
 #                   smoke test or when llama.cpp isn't set up yet.
-#   "llama_server"— llama.cpp llama-server (the tuned Qwen3.6-35B setup).
-#                   See SETUP_NOTES.md for the startup command.
-CHAT_BACKEND = "ollama"
+CHAT_BACKEND = "llama_server"
 
 # --- llama-server backend (used when CHAT_BACKEND == "llama_server") ---
 # OpenAI-compatible endpoint. Port must match llama-server's --port.
 LLAMA_SERVER_URL = "http://localhost:8033/v1"
-CHAT_MODEL = "qwen3.6-35b-a3b"
+# Must match llama-server's --alias.
+CHAT_MODEL = "qwen3.8-27b"
+
+# Qwen3.8 thinks before answering by default. Thinking gives better tool
+# choices on harder questions; turning it off is much faster per turn.
+# Sent per request, so it can be flipped without restarting the server.
+THINKING = True
+
+# Qwen3.8-27B model-card sampling presets, keyed by THINKING.
+SAMPLING: dict[bool, dict[str, float]] = {
+    True:  {"temperature": 1.0, "top_p": 0.95, "top_k": 20,
+            "min_p": 0.0, "presence_penalty": 0.0},
+    False: {"temperature": 0.7, "top_p": 0.80, "top_k": 20,
+            "min_p": 0.0, "presence_penalty": 1.5},
+}
+
+# Per-response token cap. Thinking can run long before the answer starts.
+MAX_TOKENS: dict[bool, int] = {True: 8192, False: 2048}
 
 # --- Ollama backend (used when CHAT_BACKEND == "ollama") ---
 # Must match a model shown by `ollama list`. Pull it first, e.g.
-#   ollama pull qwen3.5
-OLLAMA_CHAT_MODEL = "qwen3.5:9b"
+#   ollama pull qwen3.5:9b-q8_0
+OLLAMA_CHAT_MODEL = "qwen3.5:9b-q8_0"
 
 # Embeddings always run on Ollama (tiny model). Pull once:
 #   ollama pull nomic-embed-text
 EMBED_MODEL = "nomic-embed-text"
 
-# Cap on messages sent to the model per turn. Tool responses can be long
-# (spec tables, comparisons), so even a few turns can overflow the 16 GB
-# context budget. Session context preserves key facts across truncation.
+# Cap on prior chat messages sent to the model per turn. Keeps prompts
+# (and so prompt-processing time) short; session context preserves key
+# facts like the budget across truncation.
 MAX_HISTORY_MESSAGES = 12
 
 SYSTEM_PROMPT = (

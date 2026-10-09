@@ -10,9 +10,11 @@ Two separate concerns live here:
   older turns are truncated from the message history.
 """
 
+import copy
 import json
 
 from .config import CONTEXT_FILE, HISTORY_FILE
+from .data import known_models
 
 
 # ── Chat history ────────────────────────────────────────────────────────
@@ -65,11 +67,12 @@ def load_session_context() -> dict:
             ctx = json.loads(CONTEXT_FILE.read_text())
             # Ensure all expected keys are present.
             for key, default in _DEFAULT_CONTEXT.items():
-                ctx.setdefault(key, default)
+                ctx.setdefault(key, copy.deepcopy(default))
             return ctx
         except Exception:
             pass
-    return _DEFAULT_CONTEXT.copy()
+    # Deep copy: the default's lists/dicts must not be mutated in place.
+    return copy.deepcopy(_DEFAULT_CONTEXT)
 
 
 def save_session_context(ctx: dict) -> None:
@@ -101,14 +104,24 @@ def update_context_from_tool_call(
         The updated context dict.
     """
     # ── Track discussed components ──────────────────────────────────
+    # Record canonical model names, so "5070ti" and "RTX 5070 Ti" are one
+    # entry. A free-text search query only contributes the models it
+    # names; an unrecognised component name is kept as written.
+    index = known_models()
     component_keys = [
         "query", "component_name", "component_a", "component_b",
         "cpu_name", "gpu_name",
     ]
     for key in component_keys:
         val = tool_args.get(key)
-        if val and val not in ctx["components_discussed"]:
-            ctx["components_discussed"].append(val)
+        if not val:
+            continue
+        names = [m.best for m in index.find_all(str(val))]
+        if not names and key != "query":
+            names = [str(val)]
+        for name in names:
+            if name not in ctx["components_discussed"]:
+                ctx["components_discussed"].append(name)
 
     # Keep only the most recent 15 to avoid unbounded growth.
     ctx["components_discussed"] = ctx["components_discussed"][-15:]

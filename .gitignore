@@ -11,6 +11,10 @@ __pycache__/
 # Generated vector store (rebuilt automatically from the CSVs)
 chroma_db/
 
+# Eval run outputs and test caches
+evals/results/
+.pytest_cache/
+
 # Runtime state — personal, not part of the project
 chat_history.json
 session_context.json

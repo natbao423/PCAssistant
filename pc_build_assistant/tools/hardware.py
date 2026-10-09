@@ -6,48 +6,37 @@ results to trust. The labelled/​"NOT FOUND" output is deliberately blunt
 to stop smaller models filling gaps from memory.
 """
 
-import re
-
 from langchain_core.documents import Document
 
-from ..llm import retriever, vectorstore
+from ..matching import ModelIndex
+from ..retrieval import get_retriever, get_vectorstore
 
 
 def _direct_model_lookup(query: str) -> list[Document]:
-    """Find vector-store documents by exact model-name substring match.
+    """Find vector-store documents for the models named in the query.
 
-    Complements the semantic retriever by scanning every stored document's
-    ``model`` metadata field for known hardware name patterns (e.g.
-    ``RTX 5080``, ``Ryzen 7 9800X3D``).
+    Complements the semantic retriever by matching model names in the
+    query (e.g. ``RTX 5080``, ``9800X3D``) against every stored document's
+    ``model`` metadata field. An ambiguous name such as "RTX 4060 Ti"
+    returns every variant it could mean.
 
     Args:
         query: Free-text user query that may contain model names.
 
     Returns:
-        De-duplicated list of matching Documents, ordered by first
-        pattern match.
+        Matching Documents, ordered by where each model is mentioned.
     """
-    patterns = re.findall(
-        r"(?:RTX|RX|Ryzen \d|Core (?:Ultra )?\w+|i\d)[- ]?\w*(?:\s\w+)?",
-        query,
-        re.IGNORECASE,
-    )
-    if not patterns:
-        return []
-
-    all_data = vectorstore.get(include=["documents", "metadatas"])
-    hits: list[Document] = []
-    seen_ids: set[tuple] = set()
-
+    all_data = get_vectorstore().get(include=["documents", "metadatas"])
+    by_model: dict[str, list[Document]] = {}
     for doc_text, meta in zip(all_data["documents"], all_data["metadatas"]):
-        model_field = meta.get("model", "")
-        for pat in patterns:
-            if pat.lower().strip() in model_field.lower():
-                key = (meta.get("source"), meta.get("row"))
-                if key not in seen_ids:
-                    seen_ids.add(key)
-                    hits.append(Document(page_content=doc_text, metadata=meta))
+        by_model.setdefault(meta.get("model", ""), []).append(
+            Document(page_content=doc_text, metadata=meta)
+        )
 
+    hits: list[Document] = []
+    for mention in ModelIndex(by_model).find_all(query):
+        for model in mention.models:
+            hits.extend(by_model[model])
     return hits
 
 
@@ -66,7 +55,7 @@ def search_hardware_database(query: str) -> str:
         exact model match is found, the response says so explicitly.
     """
     direct_results = _direct_model_lookup(query)
-    semantic_results = retriever.invoke(query)
+    semantic_results = get_retriever().invoke(query)
 
     seen: set[tuple] = set()
     exact: list[str] = []

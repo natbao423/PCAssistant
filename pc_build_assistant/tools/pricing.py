@@ -15,7 +15,8 @@ string like ``"OOS"``; ``_parse_price`` normalises both to a sentinel.
 import pandas as pd
 
 from ..config import PRICE_PATH
-from ..data import load_cpu_df, load_gpu_df
+from ..data import find_price_row, find_row, load_cpu_df, load_gpu_df
+from ..matching import ambiguity_note
 
 _OOS_SENTINEL = -1.0
 _OOS_STRINGS = {"oos", "out of stock", "n/a", "none", "unavailable", "-", ""}
@@ -71,38 +72,34 @@ def _normalise_retailer(raw: object) -> str:
 
 def _get_price_and_specs(
     component_name: str,
-) -> tuple[str | None, pd.Series | None, float | None, str | None, bool]:
+) -> tuple[str | None, pd.Series | None, float | None, str | None, bool, str]:
     """Resolve the current price and spec row for a CPU or GPU.
 
-    Searches both the GPU and CPU DataFrames for a model matching
-    *component_name*.  If a ``current_prices.csv`` file exists the street
-    price is preferred; otherwise the MSRP from the spec sheet is used.
+    Searches both the GPU and CPU DataFrames for the model named by
+    *component_name*, preferring an exact name match if the GPU and CPU
+    tables both have a candidate.  If a ``current_prices.csv`` file exists
+    the street price is preferred; otherwise the MSRP from the spec sheet
+    is used.
 
     Args:
-        component_name: Model name (or substring) to look up.
+        component_name: Model name to look up, e.g. ``"RTX 5070 Ti"``.
 
     Returns:
         Tuple of ``(component_type, spec_row, price, price_source,
-        is_out_of_stock)``.  All values are ``None``/``False`` when the
+        is_out_of_stock, note)``, where ``note`` flags an ambiguous name
+        (or is empty).  Values are ``None``/``False``/``""`` when the
         component is not found.
     """
-    gpu_df = load_gpu_df()
-    cpu_df = load_cpu_df()
+    gpu_hit = find_row(load_gpu_df(), component_name)
+    cpu_hit = find_row(load_cpu_df(), component_name)
 
-    comp_type: str | None = None
-    spec: pd.Series | None = None
-
-    gpu_match = gpu_df[gpu_df["Model"].str.contains(component_name, case=False, na=False)]
-    cpu_match = cpu_df[cpu_df["Model"].str.contains(component_name, case=False, na=False)]
-
-    if not gpu_match.empty:
-        spec = gpu_match.iloc[0]
-        comp_type = "GPU"
-    elif not cpu_match.empty:
-        spec = cpu_match.iloc[0]
-        comp_type = "CPU"
+    if gpu_hit and (cpu_hit is None or gpu_hit[1].exact or not cpu_hit[1].exact):
+        (spec, mention), comp_type = gpu_hit, "GPU"
+    elif cpu_hit:
+        (spec, mention), comp_type = cpu_hit, "CPU"
     else:
-        return None, None, None, None, False
+        return None, None, None, None, False, ""
+    note = ambiguity_note(component_name, mention)
 
     msrp = float(spec["MSRP_USD"])
     current_price: float | None = None
@@ -110,12 +107,8 @@ def _get_price_and_specs(
     is_oos = False
 
     if PRICE_PATH.exists():
-        price_df = pd.read_csv(PRICE_PATH)
-        price_match = price_df[
-            price_df["Model"].str.contains(component_name, case=False, na=False)
-        ]
-        if not price_match.empty:
-            row = price_match.iloc[0]
+        row = find_price_row(pd.read_csv(PRICE_PATH), spec["Model"])
+        if row is not None:
             parsed = _parse_price(row["Current_Price_USD"])
             if parsed == _OOS_SENTINEL:
                 is_oos = True
@@ -131,7 +124,7 @@ def _get_price_and_specs(
         current_price = msrp
         source = "MSRP (no price database)"
 
-    return comp_type, spec, current_price, source, is_oos
+    return comp_type, spec, current_price, source, is_oos, note
 
 
 def check_current_value(component_name: str) -> str:
@@ -141,12 +134,12 @@ def check_current_value(component_name: str) -> str:
     score.  Falls back to MSRP when no live price is available.
 
     Args:
-        component_name: GPU or CPU model name (or substring).
+        component_name: GPU or CPU model name.
 
     Returns:
         Human-readable price and value summary, or a not-found message.
     """
-    comp_type, spec, current_price, source, is_oos = _get_price_and_specs(
+    comp_type, spec, current_price, source, is_oos, note = _get_price_and_specs(
         component_name,
     )
     if spec is None:
@@ -158,7 +151,7 @@ def check_current_value(component_name: str) -> str:
     msrp = float(spec["MSRP_USD"])
     markup = ((current_price - msrp) / msrp) * 100 if msrp > 0 else 0
 
-    result = f"{spec['Model']}\n"
+    result = note + f"{spec['Model']}\n"
     if is_oos:
         result += f"⚠️ Currently OUT OF STOCK — using MSRP ${msrp:.0f} for calculations\n"
     else:
@@ -197,8 +190,8 @@ def compare_components(component_a: str, component_b: str) -> str:
         Side-by-side comparison string with specs, pricing, and a
         value verdict, or an error if either component is not found.
     """
-    type_a, spec_a, price_a, src_a, oos_a = _get_price_and_specs(component_a)
-    type_b, spec_b, price_b, src_b, oos_b = _get_price_and_specs(component_b)
+    type_a, spec_a, price_a, src_a, oos_a, note_a = _get_price_and_specs(component_a)
+    type_b, spec_b, price_b, src_b, oos_b, note_b = _get_price_and_specs(component_b)
 
     if spec_a is None:
         return (
@@ -265,7 +258,7 @@ def compare_components(component_a: str, component_b: str) -> str:
             lines.append(f"  Value: {s['value']:.2f} perf/$")
         return "\n".join(lines)
 
-    output = f"=== {a['model']} vs {b['model']} ===\n\n"
+    output = note_a + note_b + f"=== {a['model']} vs {b['model']} ===\n\n"
     output += _fmt_one(a) + "\n\n"
     output += _fmt_one(b) + "\n\n"
 
@@ -340,17 +333,14 @@ def find_best_value(budget: float, component_type: str) -> str:
         source = "MSRP"
         is_oos = False
 
-        if not price_df.empty:
-            price_match = price_df[
-                price_df["Model"].str.contains(model, case=False, na=False)
-            ]
-            if not price_match.empty:
-                parsed = _parse_price(price_match.iloc[0]["Current_Price_USD"])
-                if parsed == _OOS_SENTINEL:
-                    is_oos = True
-                else:
-                    price = parsed
-                    source = "current"
+        price_row = find_price_row(price_df, model)
+        if price_row is not None:
+            parsed = _parse_price(price_row["Current_Price_USD"])
+            if parsed == _OOS_SENTINEL:
+                is_oos = True
+            else:
+                price = parsed
+                source = "current"
 
         if price is None and not is_oos:
             price = float(spec["MSRP_USD"])

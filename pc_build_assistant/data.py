@@ -7,6 +7,7 @@ it can be imported and tested in isolation.
 
 import json
 import shutil
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -21,6 +22,7 @@ from .config import (
     INDEX_RECORD,
     INDEX_VERSION,
 )
+from .matching import Mention, ModelIndex, same_model
 
 
 def load_gpu_df() -> pd.DataFrame:
@@ -40,6 +42,48 @@ def load_cpu_df() -> pd.DataFrame:
         DataFrame with one row per CPU model, sourced from ``cpus.csv``.
     """
     return pd.read_csv(BASE_DIR / "cpus.csv")
+
+
+def find_row(df: pd.DataFrame, name: str) -> tuple[pd.Series, Mention] | None:
+    """Find the spec row a component name refers to.
+
+    Uses token matching (see ``matching``), so "Ryzen 9 9950X" finds the
+    9950X rather than the 9950X3D, and "GeForce RTX 5080" finds the RTX 5080.
+
+    Args:
+        df: A spec DataFrame with a ``Model`` column.
+        name: Component name as written by the user or model.
+
+    Returns:
+        ``(row, mention)``, or None if no model in ``df`` matches.
+    """
+    mention = ModelIndex(df["Model"]).resolve(name)
+    if mention is None:
+        return None
+    return df[df["Model"] == mention.best].iloc[0], mention
+
+
+def find_price_row(price_df: pd.DataFrame, model: str) -> pd.Series | None:
+    """Return the price row for an exact model name, or None.
+
+    Args:
+        price_df: Contents of ``current_prices.csv``.
+        model: Canonical model name from a spec CSV.
+
+    Returns:
+        The matching row, or None if the model has no price entry.
+    """
+    if price_df.empty:
+        return None
+    hits = price_df[price_df["Model"].map(lambda m: same_model(m, model))]
+    return None if hits.empty else hits.iloc[0]
+
+
+def known_models() -> ModelIndex:
+    """Index of every GPU and CPU model across both spec CSVs."""
+    return ModelIndex(
+        list(load_gpu_df()["Model"]) + list(load_cpu_df()["Model"])
+    )
 
 
 def load_csv_docs(filepath: Path, category: str) -> list[Document]:
@@ -118,14 +162,16 @@ def build_vectorstore(embeddings: OllamaEmbeddings) -> Chroma:
             "files": expected_files,
             "version": INDEX_VERSION,
         }))
+        # stderr, not stdout: the MCP server's stdio transport owns stdout.
         print(
             f"Vector store rebuilt (v{INDEX_VERSION}) with {len(docs)} "
-            f"documents from {expected_files}"
+            f"documents from {expected_files}",
+            file=sys.stderr,
         )
     else:
         store = Chroma(
             persist_directory=CHROMA_PATH, embedding_function=embeddings,
         )
-        print("Loaded existing vector store.")
+        print("Loaded existing vector store.", file=sys.stderr)
 
     return store

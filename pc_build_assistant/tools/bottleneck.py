@@ -6,7 +6,8 @@ for the GPU's performance tier, then returns verdicts for both 1080p and
 """
 
 from ..config import BOTTLENECK_TIERS
-from ..data import load_cpu_df, load_gpu_df
+from ..data import find_row, load_cpu_df, load_gpu_df
+from ..matching import ambiguity_note
 
 
 def _classify_gpu_tier(gpu_score: float) -> tuple[float, str]:
@@ -104,30 +105,31 @@ def check_cpu_gpu_bottleneck(cpu_name: str, gpu_name: str) -> str:
         for both 1080p and 4K, or an error message if either component
         is not found.
     """
-    cpu_df = load_cpu_df()
-    gpu_df = load_gpu_df()
+    cpu_hit = find_row(load_cpu_df(), cpu_name)
+    gpu_hit = find_row(load_gpu_df(), gpu_name)
 
-    cpu_match = cpu_df[cpu_df["Model"].str.contains(cpu_name, case=False, na=False)]
-    gpu_match = gpu_df[gpu_df["Model"].str.contains(gpu_name, case=False, na=False)]
-
-    if cpu_match.empty:
+    if cpu_hit is None:
         return (
             f"CPU '{cpu_name}' NOT FOUND in database.  "
             f"Do NOT guess — tell the user this CPU is not in the database."
         )
-    if gpu_match.empty:
+    if gpu_hit is None:
         return (
             f"GPU '{gpu_name}' NOT FOUND in database.  "
             f"Do NOT guess — tell the user this GPU is not in the database."
         )
 
-    cpu = cpu_match.iloc[0]
-    gpu = gpu_match.iloc[0]
+    cpu, cpu_mention = cpu_hit
+    gpu, gpu_mention = gpu_hit
+    notes = (
+        ambiguity_note(cpu_name, cpu_mention)
+        + ambiguity_note(gpu_name, gpu_mention)
+    )
     cpu_score = float(cpu["Gaming_Perf_1080p"])
     gpu_perf = gpu.get("Relative_Perf_4K", None)
 
     if gpu_perf is None or str(gpu_perf).strip() == "-":
-        return (
+        return notes + (
             f"CPU: {cpu['Model']} (gaming score: {cpu_score}/100)\n"
             f"GPU: {gpu['Model']} (no 4K benchmark available)\n"
             f"Cannot determine bottleneck without GPU benchmark data."
@@ -136,7 +138,7 @@ def check_cpu_gpu_bottleneck(cpu_name: str, gpu_name: str) -> str:
     gpu_score = float(gpu_perf)
     min_cpu, tier = _classify_gpu_tier(gpu_score)
 
-    header = (
+    header = notes + (
         f"CPU: {cpu['Model']} — gaming score: {cpu_score}/100 (9800X3D = 100)\n"
         f"GPU: {gpu['Model']} — 4K score: {gpu_score}/100 (RTX 5090 = 100)\n"
         f"GPU tier: {tier} — minimum recommended CPU score: {min_cpu}\n"
